@@ -1,8 +1,0 @@
-{
-  "granularity": "DAY",
-  "dimensions": ["host"],
-  "metrics": [
-    {"name": "visited_sum", "type":"long"},
-    {"name": "unique_hosts", "type":"hyperUnique"}
-  ]
-}

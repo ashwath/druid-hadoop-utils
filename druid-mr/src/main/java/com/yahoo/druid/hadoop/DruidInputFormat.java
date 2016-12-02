@@ -14,6 +14,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.collect.Ordering;
+import io.druid.data.input.InputRow;
 import io.druid.indexer.HadoopDruidIndexerConfig;
 import io.druid.indexer.hadoop.DatasourceIngestionSpec;
 import io.druid.indexer.hadoop.DatasourceInputFormat;
@@ -24,8 +25,11 @@ import io.druid.timeline.VersionedIntervalTimeline;
 import io.druid.timeline.partition.PartitionChunk;
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.RecordReader;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.joda.time.Interval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,18 +84,18 @@ public class DruidInputFormat extends DatasourceInputFormat
     );
     logger.info("schema = " + schemaStr);
 
-    DatasourceIngestionSpec ingestionSpec = HadoopDruidIndexerConfig.jsonMapper.readValue(
+    DatasourceIngestionSpec ingestionSpec = HadoopDruidIndexerConfig.JSON_MAPPER.readValue(
         schemaStr,
         DatasourceIngestionSpec.class
     );
     String segmentsStr = getSegmentsToLoad(
         ingestionSpec.getDataSource(),
-        ingestionSpec.getInterval(),
+        ingestionSpec.getIntervals(),
         overlordUrl
     );
     logger.info("segments list received from overlord = [%s]", segmentsStr);
 
-    List<DataSegment> segmentsList = HadoopDruidIndexerConfig.jsonMapper.readValue(
+    List<DataSegment> segmentsList = HadoopDruidIndexerConfig.JSON_MAPPER.readValue(
         segmentsStr,
         new TypeReference<List<DataSegment>>()
         {
@@ -101,7 +105,8 @@ public class DruidInputFormat extends DatasourceInputFormat
     for (DataSegment segment : segmentsList) {
       timeline.add(segment.getInterval(), segment.getVersion(), segment.getShardSpec().createChunk(segment));
     }
-    final List<TimelineObjectHolder<String, DataSegment>> timeLineSegments = timeline.lookup(ingestionSpec.getInterval());
+    final List<TimelineObjectHolder<String, DataSegment>> timeLineSegments = timeline
+        .lookup(ingestionSpec.getIntervals().get(0));
     final List<WindowedDataSegment> windowedSegments = new ArrayList<>();
     for (TimelineObjectHolder<String, DataSegment> holder : timeLineSegments) {
       for (PartitionChunk<DataSegment> chunk : holder.getObject()) {
@@ -109,16 +114,18 @@ public class DruidInputFormat extends DatasourceInputFormat
       }
     }
 
-    conf.set(CONF_INPUT_SEGMENTS, HadoopDruidIndexerConfig.jsonMapper.writeValueAsString(windowedSegments));
+    conf.set(CONF_INPUT_SEGMENTS, HadoopDruidIndexerConfig.JSON_MAPPER.writeValueAsString(windowedSegments));
 
     return super.getSplits(context);
   }
 
   //TODO: change it so that it could use @Global HttpClient injected via Druid
-  private String getSegmentsToLoad(String dataSource, Interval interval, String overlordUrl)
+  private String getSegmentsToLoad(String dataSource, List<Interval> intervals, String overlordUrl)
   {
     String urlStr = "http://" + overlordUrl + "/druid/indexer/v1/action";
     logger.info("Sending request to overlord at " + urlStr);
+
+    Interval interval = intervals.get(0);
 
     String requestJson = getSegmentListUsedActionJson(dataSource, interval.toString());
     logger.info("request json is " + requestJson);
@@ -178,5 +185,11 @@ public class DruidInputFormat extends DatasourceInputFormat
            "\"dataSource\": \"" + dataSource + "\"," +
            "\"interval\": \"" + interval + "\"" +
            "}}";
+  }
+  @Override
+  public RecordReader<NullWritable, InputRow> createRecordReader(InputSplit split, TaskAttemptContext context)
+      throws IOException, InterruptedException
+  {
+    return new DruidRecordReader();
   }
 }
